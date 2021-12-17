@@ -34,19 +34,25 @@ def normalized_cosine_similiarty(x: torch.Tensor, y: torch.Tensor):
 
 def calc_auc(D0: torch.LongTensor, D1: torch.LongTensor, model: nn.Module):
     model.eval()
+    EVAL_BATCH_SIZE = 2048
 
-    EVAL_BATCH_SIZE = 128
     d0_ldr = DataLoader(D0, EVAL_BATCH_SIZE)
     d1_ldr = DataLoader(D1, EVAL_BATCH_SIZE)
 
-    pred0 = model.forward(D0)  # B,2,Emb
-    pred1 = model.forward(D1)  # B,2,Emb
+    b = 0
+    tot_auc = 0
+    for d0, d1 in zip(d0_ldr, d1_ldr):
+        b += 1
+        denominator = d0.shape[0] * d1.shape[0]
+        pred0 = model.forward(d0)  # B,2,Emb
+        pred1 = model.forward(d1)  # B,2,Emb
 
-    prob0 = normalized_cosine_similiarty(pred0[:, 0, :], pred0[:, 1, :])
-    prob1 = normalized_cosine_similiarty(pred1[:, 0, :], pred1[:, 1, :])
-    prob1_ext = prob1.repeat_interleave(prob0.shape[0])
-    prob0_ext = prob0.repeat(prob1.shape[0])
-    auc = torch.sum(prob0_ext < prob1_ext).float()\
-        / prob0.shape[0] / prob1.shape[0]
+        prob0 = normalized_cosine_similiarty(pred0[:, 0, :], pred0[:, 1, :])
+        prob1 = normalized_cosine_similiarty(pred1[:, 0, :], pred1[:, 1, :])
+        prob1_ext = prob1.repeat_interleave(prob0.shape[0])
+        prob0_ext = prob0.repeat(prob1.shape[0])
+        auc = torch.sum(prob0_ext < prob1_ext).float() / denominator
+        tot_auc += auc
 
-    return auc
+    tot_auc /= b
+    return tot_auc
