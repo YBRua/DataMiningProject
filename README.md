@@ -1,1 +1,1 @@
-# AI3Data Mining Course Project
+# AI3602 Data Mining Course Project
