@@ -14,13 +14,14 @@ import data_io as io
 from tqdm import tqdm
 from typing import List
 from torch.utils.data import DataLoader
-from metric import calc_auc, get_negative_tests, normalized_cosine_similiarty
+from baseline.metric import calc_auc, normalized_cosine_similiarty
+from baseline.metric import get_negative_tests
 
-from model import SkipGram
-from utils import load_edges, parse_args
-from sparse_graph import SparseGraph
-from walker import BiasedRandomWalker, RandomWalker, UniformRandomWalker
-from loss import NegativeSamplingLoss
+from baseline.model import SkipGram
+from baseline.utils import load_edges, parse_args
+from baseline.sparse_graph import SparseGraph
+from baseline.walker import RandomWalker, UniformRandomWalker
+from baseline.loss import NegativeSamplingLoss
 
 
 def train_procedure(
@@ -142,7 +143,7 @@ def main():
     IO_PARAM = args.walker_io_param
 
     # build sparse graph
-    data = io.filter_dataset(io.load_training_set(INPUT_PATH))
+    data = io.filter_dataset(io.load_dataset(INPUT_PATH))
     edges = data[:, :2]
     n_vertices = np.max(edges) + 1
     print("edges", edges.shape)

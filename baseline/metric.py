@@ -2,7 +2,7 @@ import torch
 import random
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from sparse_graph import SparseGraph
+from .sparse_graph import SparseGraph
 
 
 def get_negative_tests(G: SparseGraph, size: int) -> torch.Tensor:

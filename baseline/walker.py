@@ -2,7 +2,7 @@ import random
 
 from typing import Dict, List
 from abc import abstractmethod
-from sparse_graph import SparseGraph
+from .sparse_graph import SparseGraph
 
 
 class RandomWalker():

@@ -1,7 +1,7 @@
 import numpy as np
 import scipy.sparse as sparse
 from collections import defaultdict as ddict
-from utils import load_edges
+from .utils import load_edges
 from typing import List
 
 
