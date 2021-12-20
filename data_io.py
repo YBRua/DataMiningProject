@@ -1,6 +1,19 @@
 import numpy as np
 import pandas as pd
 
+import typing as t
+
+
+class TestEntry():
+    def __init__(
+            self,
+            id: int,
+            positives: t.List[int] = None,
+            negatives: t.List[int] = None):
+        self.id = id
+        self.positives = positives
+        self.negatives = negatives
+
 
 def load_dataset(path: str) -> np.ndarray:
     """Loads a dataset from given `path` and returns an `np.ndarray`
@@ -38,5 +51,56 @@ def filter_dataset(data: np.ndarray) -> np.ndarray:
     return positives
 
 
-def load_test_set(path: str) -> np.ndarray:
-    pass
+def load_test_entries(path: str) -> t.List[TestEntry]:
+    """Loads test.ratings and test.negative from given `path`.
+
+    Args:
+        path (str): Path to *.test.negative and *.test.rating
+
+    Returns:
+        List[TestEntry]: A list of TestEntry objects.
+        - Each `TestEntry` consists of
+            - an `id`: Id of user
+            - a list of `positives`: Item ids of pos ratings from this user
+            - a list of `negatives`: Item ids of neg ratings from this user
+
+    NOTE: This function appends `.test.rating` and `.test.negative` to path,
+    so `path` should be like `./data/bookcross`
+    """
+    pos_path = path + '.test.rating'
+    neg_path = path + '.test.negative'
+    pos_ratings = pd.read_csv(pos_path, sep='\t', header=None).to_numpy()
+    neg_ratings = pd.read_csv(neg_path, sep='\t', header=None).to_numpy()
+
+    assert pos_ratings.shape[0] == neg_ratings.shape[0], "?"
+
+    n_entries = pos_ratings.shape[0]
+    entries: t.List[TestEntry] = []
+    for e in range(n_entries):
+        entries.append(TestEntry(e))
+
+    _load_test_positives(pos_ratings, entries)
+    _load_test_negatives(neg_ratings, entries)
+
+    return entries
+
+
+def _load_test_positives(ratings: str, entries: t.List[TestEntry]):
+    n_users = len(entries)
+    for id, entry in enumerate(entries):
+        entry.positives = (ratings[id, 1:] + n_users).tolist()
+
+
+def _load_test_negatives(ratings: str, entries: t.List[TestEntry]):
+    n_users = len(entries)
+    for id, entry in enumerate(entries):
+        entry.negatives = (ratings[id, 1:] + n_users).tolist()
+
+
+if __name__ == '__main__':
+    path = './data/bookcross'
+    entries = load_test_entries(path)
+
+    for i in range(10):
+        entry = entries[i]
+        print(entry.id, entry.positives, entry.negatives)
