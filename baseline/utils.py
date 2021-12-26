@@ -43,11 +43,11 @@ def parse_args():
         help='PyTorch style device to run the model')
     parser.add_argument(
         '--dataset_path', type=str,
-        default='./data/lab2_edge.csv',
+        default='./data/bookcross.train.rating',
         help='Path to dataset (csv file)')
     parser.add_argument(
         '--testset_path', type=str,
-        default='./data/lab2_test.csv',
+        default='',
         help='Path to test set (csv file)')
     parser.add_argument(
         '--file_output', '-o', type=str,
