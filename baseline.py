@@ -15,7 +15,7 @@ from tqdm import tqdm
 from typing import List
 from torch.utils.data import DataLoader
 from baseline.metric import calc_auc, normalized_cosine_similiarty
-from baseline.metric import get_negative_tests
+from baseline.metric import get_negative_tests, ndcg
 
 from baseline.model import SkipGram
 from baseline.utils import load_edges, parse_args
@@ -196,7 +196,7 @@ def main():
         model.eval()
     else:
         # inference mode
-        model.load_state_dict(torch.load(PRETRAINED_MODEL))
+        model.load_state_dict(torch.load(PRETRAINED_MODEL, map_location=torch.device(DEVICE)))
         model.eval()
 
     if args.fancy:
@@ -214,9 +214,29 @@ def main():
         sns.despine()
         plt.show()
 
-    # probs = inference_procedure(model, test_x)
+    test_x = io.load_test_entries(args.testset_path)
+    ndcg_log = []
+    prog_test = tqdm(test_x)
+    for entry in prog_test:
+        user = entry.id
+        tn = torch.empty(
+            [len(entry.positives) + len(entry.negatives), 2],
+            dtype=torch.int64,
+            device=DEVICE
+        )
+        tn[:, 0] = user
+        tn[:len(entry.positives), 1] = tn.new_tensor(entry.positives)
+        tn[len(entry.positives):, 1] = tn.new_tensor(entry.negatives)
+        probs = inference_procedure(model, tn)
 
-    # probs = probs.detach().cpu().numpy()
+        ndcg_k = 3
+        probsort = probs.detach().cpu().numpy().argsort()[::-1]
+        ranklist = np.array(entry.positives + entry.negatives)[probsort]
+        ndcg_log.append(ndcg(ranklist, set(entry.positives), ndcg_k))
+        if random.random() < 0.01:
+            prog_test.set_description(f"NDCG@{ndcg_k}: {np.mean(ndcg_log):.4f}")
+    print("Final", f"NDCG@{ndcg_k}: {np.mean(ndcg_log):.4f}")
+
     # output_to_csv(probs, OUTPUT_PATH)
 
 

@@ -1,6 +1,7 @@
 import torch
 import random
 import torch.nn as nn
+import math
 from torch.utils.data import DataLoader
 from .sparse_graph import SparseGraph
 
@@ -56,3 +57,14 @@ def calc_auc(D0: torch.LongTensor, D1: torch.LongTensor, model: nn.Module):
 
     tot_auc /= b
     return tot_auc
+
+
+def ndcg(ranked, gt, at=5):
+    score = 0.0
+    total = 0.0
+    for i in range(at):
+        t = math.log(2) / math.log(i + 2)
+        total += t
+        if ranked[i] in gt:
+            score += t
+    return score / total
