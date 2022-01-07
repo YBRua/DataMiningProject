@@ -2,6 +2,7 @@ import torch
 import random
 import torch.nn as nn
 import math
+import numpy
 from torch.utils.data import DataLoader
 from .sparse_graph import SparseGraph
 
@@ -68,3 +69,11 @@ def ndcg(ranked, gt, at=5):
         if ranked[i] in gt:
             score += t
     return score / total
+
+
+def batch_ndcg_torch(topk: torch.Tensor, labels01: torch.Tensor):
+    t = math.log(2) / (torch.arange(
+        topk.shape[-1], dtype=torch.float32, device=topk.device
+    ) + 2)
+    batch_idx = topk.new_tensor(numpy.arange(topk.shape[0])).unsqueeze(-1)
+    return (t * labels01[batch_idx, topk].to(t)).sum(-1) / t.sum(-1)
