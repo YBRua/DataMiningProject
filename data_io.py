@@ -51,7 +51,7 @@ def filter_dataset(data: np.ndarray) -> np.ndarray:
     return positives
 
 
-def load_test_entries(path: str) -> t.List[TestEntry]:
+def load_test_entries(path: str, offset=True) -> t.List[TestEntry]:
     """Loads test.ratings and test.negative from given `path`.
 
     Args:
@@ -79,22 +79,33 @@ def load_test_entries(path: str) -> t.List[TestEntry]:
     for e in range(n_entries):
         entries.append(TestEntry(e))
 
-    _load_test_positives(pos_ratings, entries)
-    _load_test_negatives(neg_ratings, entries)
+    _load_test_positives(pos_ratings, entries, offset)
+    _load_test_negatives(neg_ratings, entries, offset)
 
     return entries
 
 
-def _load_test_positives(ratings: str, entries: t.List[TestEntry]):
+def _load_test_positives(ratings: str, entries: t.List[TestEntry], offset=True):
     n_users = len(entries)
     for id, entry in enumerate(entries):
-        entry.positives = (ratings[id, 1:] + n_users).tolist()
+        entry.positives = (ratings[id, 1:] + n_users * offset).tolist()
 
 
-def _load_test_negatives(ratings: str, entries: t.List[TestEntry]):
+def _load_test_negatives(ratings: str, entries: t.List[TestEntry], offset=True):
     n_users = len(entries)
     for id, entry in enumerate(entries):
-        entry.negatives = (ratings[id, 1:] + n_users).tolist()
+        entry.negatives = (ratings[id, 1:] + n_users * offset).tolist()
+
+
+def load_train_entries(path: str) -> t.List[TestEntry]:
+    data = load_dataset(path)
+    entries = [TestEntry(x, [], []) for x in range(np.max(data, axis=0)[0] + 1)]
+    for user, item, review in data:
+        if review > 0:
+            entries[user].positives.append(item)
+        else:
+            entries[user].negatives.append(item)
+    return entries
 
 
 if __name__ == '__main__':
