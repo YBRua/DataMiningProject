@@ -1,15 +1,15 @@
-import itertools
-from typing import List
+import copy
+import pickle
+import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, IterableDataset
 import numpy
-import random
-import copy
+from typing import Dict, List
 from types import SimpleNamespace
-from baseline.metric import batch_ndcg_torch
+from torch.utils.data import DataLoader, IterableDataset
 
+from baseline.metric import batch_ndcg_torch
 import data_io
 from common import *
 
@@ -120,21 +120,21 @@ class DGCNN(nn.Module):
 class Net(nn.Module):
     def __init__(self):
         super().__init__()
-        self.user_embed = nn.Embedding(10000, 99)
-        self.item_embed = nn.Embedding(70000, 99)
+        self.user_embed = nn.Embedding(10000, 128)
+        self.item_embed = nn.Embedding(90000, 32)
         self.dgcnn = DGCNN(SimpleNamespace(
             k=9,
             emb_dims=256,
-            input_dims=100,
+            input_dims=128,
             output_channels=1,
             dropout=0.3
         ))
 
     def forward(self, user_ids, item_ids, labels=None):
         user = self.user_embed(user_ids)
-        user = torch.cat([user, torch.ones_like(user[..., :1])], -1)
-        item = self.item_embed(item_ids)
-        item = torch.cat([item, torch.zeros_like(item[..., :1])], -1)
+        user = torch.cat([user], -1)
+        item = self.item_embed(item_ids).flatten(2)
+        item = torch.cat([item], -1)
         hodgepodge = torch.cat([user.unsqueeze(1), item], 1).transpose(1, 2)
         return self.dgcnn(hodgepodge).squeeze(1)[..., 1:]
 
@@ -142,14 +142,19 @@ class Net(nn.Module):
 class Rekommand(IterableDataset):
     def __init__(
         self, entries: List[data_io.TestEntry],
+        item_feature_dict: Dict[int, List[int]],
         pos_per_entry: int = 5, neg_per_entry: int = 50,
+        background_neg_samples: int = 0,
         full: bool = False
     ) -> None:
         super().__init__()
         self.full = full
         self.ppe = pos_per_entry
         self.npe = neg_per_entry
+        self.bns = background_neg_samples
         self.entries = entries
+        self.ifd = item_feature_dict
+        self.valid_items = list(self.ifd.keys())
 
     def __iter__(self):
         rng = len(self.entries) if self.full else 2 ** 30
@@ -159,17 +164,17 @@ class Rekommand(IterableDataset):
             if not self.full:
                 if not len(entry.positives):
                     continue
-                while not len(entry.negatives):
-                    entry.negatives = random.choice(self.entries).negatives
                 entry.positives = random.choices(entry.positives, k=self.ppe)
-                entry.negatives = random.choices(entry.negatives, k=self.npe)
-            items = numpy.concatenate([list(entry.positives), list(entry.negatives)])
+                # entry.negatives = random.choices(entry.negatives, k=self.npe)
+                entry.negatives = random.choices(self.valid_items, k=self.npe)
+            items = list(entry.positives) + list(entry.negatives)
+            item_features = numpy.array([self.ifd[x][:4] for x in items])
             labels = numpy.concatenate([
                 numpy.ones_like(entry.positives),
                 numpy.zeros_like(entry.negatives)
             ])
             randperm = numpy.random.permutation(len(items))
-            yield entry.id, items[randperm], labels[randperm]
+            yield entry.id, item_features[randperm], labels[randperm]
 
     def __length_hint__(self):
         return len(self.entries) if self.full else 2 * len(self.entries)
@@ -191,13 +196,14 @@ class NDCG3(Metric):
 def main():
     train = data_io.load_train_entries('data/bookcross.train.rating')
     test = data_io.load_test_entries('data/bookcross', False)
-    train = Rekommand(train)
-    test = Rekommand(test, full=True)
+    features_dict = pickle.load(open('data/book_info_bookcross', 'rb'))
+    train = Rekommand(train, features_dict, 11, 44, 44)
+    test = Rekommand(test, features_dict, full=True)
     model = Net().to(device)
     opt = torch.optim.Adam(model.parameters())
     B = 32
     train_loader = DataLoader(train, B, num_workers=2)
-    test_loader = DataLoader(test, B, num_workers=2)
+    test_loader = DataLoader(test, B, num_workers=1)
     best_acc = -1
     for epoch in range(100):
         train_sub = TruncatedIter(train_loader, train.__length_hint__() // B + 1)
