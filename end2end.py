@@ -1,4 +1,3 @@
-import sys
 import itertools
 from typing import List
 import torch
@@ -35,16 +34,14 @@ def get_graph_feature(x, k=20, idx=None):
         idx = knn(x, k=k)  # (batch_size, num_points, k)
     device = x.device
 
-    idx_base = torch.arange(0, batch_size, device=device)\
-        .view(-1, 1, 1) * num_points
-
+    idx_base = torch.arange(0, batch_size, device=device).view(-1, 1, 1)*num_points
     idx = idx + idx_base
-
     idx = idx.view(-1)
 
     _, num_dims, _ = x.size()
 
-    x = x.transpose(2, 1).contiguous()  # (batch_size, num_points, num_dims)  -> (batch_size*num_points, num_dims) #   batch_size * num_points * k + range(0, batch_size*num_points)
+    x = x.transpose(2, 1).contiguous()
+
     feature = x.view(batch_size*num_points, -1)[idx, :]
     feature = feature.view(batch_size, num_points, k, num_dims) 
     x = x.view(batch_size, num_points, 1, num_dims).repeat(1, 1, k, 1)
@@ -77,13 +74,16 @@ class DGCNN(nn.Module):
         self.conv3 = nn.Sequential(nn.Conv2d(64*2, 128, kernel_size=1, bias=False),
                                    self.bn3,
                                    nn.LeakyReLU(negative_slope=0.2))
-        # self.conv4 = nn.Sequential(nn.Conv2d(128*2, 256, kernel_size=1, bias=False),
-        #                            self.bn4,
-        #                            nn.LeakyReLU(negative_slope=0.2))
-        self.conv5 = nn.Sequential(nn.Conv1d(128, args.emb_dims, kernel_size=1, bias=False),
+        self.conv4 = nn.Sequential(nn.Conv2d(128*2, 256, kernel_size=1, bias=False),
+                                   self.bn4,
+                                   nn.LeakyReLU(negative_slope=0.2))
+        self.conv5 = nn.Sequential(nn.Conv1d(512, args.emb_dims, kernel_size=1, bias=False),
                                    self.bn5,
                                    nn.LeakyReLU(negative_slope=0.2))
-        self.linear2 = nn.Conv1d(args.emb_dims, 256, 1)
+        self.linear1 = nn.Conv1d(args.emb_dims, 512, 1, bias=False)
+        self.bn6 = nn.BatchNorm1d(512)
+        self.dp1 = nn.Dropout(p=args.dropout)
+        self.linear2 = nn.Conv1d(512, 256, 1)
         self.bn7 = nn.BatchNorm1d(256)
         self.dp2 = nn.Dropout(p=args.dropout)
         self.linear3 = nn.Conv1d(256, output_channels, 1)
@@ -97,21 +97,20 @@ class DGCNN(nn.Module):
         x = self.conv2(x)
         x2 = x.max(dim=-1, keepdim=False)[0]
 
-        # x = get_graph_feature(x2, k=self.k)
-        # x = self.conv3(x)
-        # x3 = x.max(dim=-1, keepdim=False)[0]
+        x = get_graph_feature(x2, k=self.k)
+        x = self.conv3(x)
+        x3 = x.max(dim=-1, keepdim=False)[0]
 
-        # x = get_graph_feature(x3, k=self.k)
-        # x = self.conv4(x)
-        # x4 = x.max(dim=-1, keepdim=False)[0]
+        x = get_graph_feature(x3, k=self.k)
+        x = self.conv4(x)
+        x4 = x.max(dim=-1, keepdim=False)[0]
 
-        # x = torch.cat((x1, x2, x3, x4), dim=1)
-        x = torch.cat((x1, x2), dim=1)
+        x = torch.cat((x1, x2, x3, x4), dim=1)
 
         x = self.conv5(x)
 
-        # x = F.leaky_relu(self.bn6(self.linear1(x)), negative_slope=0.2)
-        # x = self.dp1(x)
+        x = F.leaky_relu(self.bn6(self.linear1(x)), negative_slope=0.2)
+        x = self.dp1(x)
         x = F.leaky_relu(self.bn7(self.linear2(x)), negative_slope=0.2)
         x = self.dp2(x)
         x = self.linear3(x)
@@ -121,26 +120,23 @@ class DGCNN(nn.Module):
 class Net(nn.Module):
     def __init__(self):
         super().__init__()
-        self.user_embed = nn.Embedding(10000, 32)
-        self.item_embed = nn.Embedding(70000, 32)
+        self.user_embed = nn.Embedding(10000, 99)
+        self.item_embed = nn.Embedding(70000, 99)
         self.dgcnn = DGCNN(SimpleNamespace(
             k=9,
-            emb_dims=128,
-            input_dims=64,
+            emb_dims=256,
+            input_dims=100,
             output_channels=1,
             dropout=0.3
         ))
 
     def forward(self, user_ids, item_ids, labels=None):
         user = self.user_embed(user_ids)
-        # user = torch.cat([user, torch.ones_like(user[..., :1])], -1)
+        user = torch.cat([user, torch.ones_like(user[..., :1])], -1)
         item = self.item_embed(item_ids)
-        # item = torch.cat([item, torch.zeros_like(item[..., :1])], -1)
-        hodgepodge = torch.cat(
-            [user.unsqueeze(1).expand_as(item), item],
-            -1
-        ).transpose(1, 2)
-        return self.dgcnn(hodgepodge).squeeze(1)
+        item = torch.cat([item, torch.zeros_like(item[..., :1])], -1)
+        hodgepodge = torch.cat([user.unsqueeze(1), item], 1).transpose(1, 2)
+        return self.dgcnn(hodgepodge).squeeze(1)[..., 1:]
 
 
 class Rekommand(IterableDataset):
@@ -199,42 +195,20 @@ def main():
     test = Rekommand(test, full=True)
     model = Net().to(device)
     opt = torch.optim.Adam(model.parameters())
-    B = int(sys.argv[-1])
+    B = 32
     train_loader = DataLoader(train, B, num_workers=2)
     test_loader = DataLoader(test, B, num_workers=2)
     best_acc = -1
     for epoch in range(100):
-        train_sub = TruncatedIter(
-            train_loader,
-            train.__length_hint__() // B + 1
-        )
-        train_stats = run_epoch(
-            model,
-            train_sub,
-            [Loss(), NDCG3()],
-            epoch,
-            opt
-        )
-        val_stats = run_epoch(
-            model,
-            test_loader,
-            [Loss(), NDCG3()],
-            epoch
-        )
+        train_sub = TruncatedIter(train_loader, train.__length_hint__() // B + 1)
+        train_stats = run_epoch(model, train_sub, [Loss(), NDCG3()], epoch, opt)
+        val_stats = run_epoch(model, test_loader, [Loss(), NDCG3()], epoch)
         if epoch == 0:
-            write_log(
-                "epoch",
-                "train_loss",
-                "val_loss",
-                "train_ndcg@3",
-                "val_ndcg@3"
-            )
+            write_log("epoch", "train_loss", "val_loss", "train_ndcg@3", "val_ndcg@3")
         write_log(
             epoch,
-            train_stats['Loss'],
-            val_stats['Loss'],
-            train_stats['NDCG3'],
-            val_stats['NDCG3'],
+            train_stats['Loss'], val_stats['Loss'],
+            train_stats['NDCG3'], val_stats['NDCG3'],
         )
         if val_stats['NDCG3'] > best_acc:
             best_acc = val_stats['NDCG3']
