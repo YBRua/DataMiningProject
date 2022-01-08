@@ -72,8 +72,23 @@ def ndcg(ranked, gt, at=5):
 
 
 def batch_ndcg_torch(topk: torch.Tensor, labels01: torch.Tensor):
-    t = math.log(2) / (torch.arange(
+    t = math.log(2) / torch.log(torch.arange(
         topk.shape[-1], dtype=torch.float32, device=topk.device
     ) + 2)
     batch_idx = topk.new_tensor(numpy.arange(topk.shape[0])).unsqueeze(-1)
     return (t * labels01[batch_idx, topk].to(t)).sum(-1) / t.sum(-1)
+
+
+def getNDCG(ranklist, gtItem):
+    result = []
+    for j in [1, 3, 5]:
+        count = 0
+        idcg = 0
+        for i in range(j):
+            item = ranklist[i]
+            if item in gtItem:
+                count += math.log(2) / math.log(i + 2)
+        for i in range(j):
+            idcg += math.log(2) / math.log(i + 2)
+        result.append(count / idcg)
+    return result
