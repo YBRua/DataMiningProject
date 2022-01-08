@@ -135,8 +135,8 @@ class Net(nn.Module):
         user = torch.cat([user], -1)
         item = self.item_embed(item_ids).flatten(2)
         item = torch.cat([item], -1)
-        hodgepodge = torch.cat([user.unsqueeze(1), item], 1).transpose(1, 2)
-        return self.dgcnn(hodgepodge).squeeze(1)[..., 1:]
+        hodgepodge = torch.cat([item], 1).transpose(1, 2)
+        return self.dgcnn(hodgepodge).squeeze(1)  # [..., 1:]
 
 
 class Rekommand(IterableDataset):
@@ -167,14 +167,14 @@ class Rekommand(IterableDataset):
                 entry.positives = random.choices(entry.positives, k=self.ppe)
                 # entry.negatives = random.choices(entry.negatives, k=self.npe)
                 entry.negatives = random.choices(self.valid_items, k=self.npe)
-            items = list(entry.positives) + list(entry.negatives)
-            item_features = numpy.array([self.ifd[x][:4] for x in items])
+            items = numpy.array(list(entry.positives) + list(entry.negatives))
+            # item_features = numpy.array([self.ifd[x][:4] for x in items])
             labels = numpy.concatenate([
                 numpy.ones_like(entry.positives),
                 numpy.zeros_like(entry.negatives)
             ])
             randperm = numpy.random.permutation(len(items))
-            yield entry.id, item_features[randperm], labels[randperm]
+            yield entry.id, items[randperm], labels[randperm]
 
     def __length_hint__(self):
         return len(self.entries) if self.full else 2 * len(self.entries)
@@ -193,17 +193,36 @@ class NDCG3(Metric):
         return batch_ndcg_torch(topk, y).mean()
 
 
+class TestModel(nn.Module):
+    def __init__(self, train):
+        super().__init__()
+        self.linear = nn.Linear(1, 1)
+        self.cnt = collections.Counter([y for x in train for y in x.positives])
+        self.srt = sorted(self.cnt, key=self.cnt.get)
+        self.table = {x: i for i, x in enumerate(self.srt)}
+
+    def forward(self, user_ids, item_ids, labels=None):
+        scores = torch.zeros_like(item_ids).float()
+        for b in range(item_ids.shape[0]):
+            for i in range(item_ids.shape[1]):
+                scores[b, i] = self.table.get(item_ids[b, i].item(), -1)
+        return scores
+
+
 def main():
     train = data_io.load_train_entries('data/bookcross.train.rating')
     test = data_io.load_test_entries('data/bookcross', False)
     features_dict = pickle.load(open('data/book_info_bookcross', 'rb'))
+    test_model = TestModel(train)
     train = Rekommand(train, features_dict, 11, 44, 44)
     test = Rekommand(test, features_dict, full=True)
-    model = Net().to(device)
-    opt = torch.optim.Adam(model.parameters())
     B = 32
     train_loader = DataLoader(train, B, num_workers=2)
     test_loader = DataLoader(test, B, num_workers=1)
+    run_epoch(test_model, test_loader, [Loss(), NDCG3()], 0)
+
+    model = Net().to(device)
+    opt = torch.optim.Adam(model.parameters())
     best_acc = -1
     for epoch in range(100):
         train_sub = TruncatedIter(train_loader, train.__length_hint__() // B + 1)
