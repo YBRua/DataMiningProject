@@ -126,19 +126,20 @@ class Net(nn.Module):
         self.item_bias = nn.Embedding(90000, 1)
         self.dgcnn = DGCNN(SimpleNamespace(
             k=9,
-            emb_dims=64,
+            emb_dims=128,
             input_dims=192,
             output_channels=1,
             dropout=0.3
         ))
 
-    def forward(self, user_ids, item_ids, item_features, labels=None):
-        user = self.user_embed(user_ids)
-        item = self.item_embed(item_features).flatten(2)
-        hodgepodge = torch.cat([
-            user.unsqueeze(1).repeat(1, item.shape[1], 1), item
-        ], -1).transpose(1, 2)
-        iemb = self.dgcnn(hodgepodge)
+    def forward(self, user_ids, item_ids, user_features, item_features, labels=None):
+        # b34d
+        user = self.item_embed(user_features).mean(1).flatten(1)
+        item = self.item_embed(item_features).flatten(2).transpose(1, 2)
+        # hodgepodge = torch.cat([
+        #     user.unsqueeze(1).repeat(1, item.shape[1], 1), item
+        # ], -1).transpose(1, 2)
+        iemb = item
         uemb = user
         return torch.einsum("bdn,bd->bn", iemb, uemb) * 0.1 + self.item_bias(item_ids).squeeze(-1).detach()
 
@@ -147,6 +148,7 @@ class Rekommand(IterableDataset):
     def __init__(
         self, entries: List[data_io.TestEntry],
         item_feature_dict: Dict[int, List[int]],
+        user_feature_dict: Dict[int, List[int]],
         pos_per_entry: int = 5, neg_per_entry: int = 50,
         background_neg_samples: int = 0,
         full: bool = False
@@ -158,6 +160,7 @@ class Rekommand(IterableDataset):
         self.bns = background_neg_samples
         self.entries = entries
         self.ifd = item_feature_dict
+        self.ufd = user_feature_dict
         self.valid_items = list(self.ifd.keys())
         self.cum_weights = [*itertools.accumulate(map(lambda x: len(x.positives), self.entries))]
 
@@ -170,16 +173,17 @@ class Rekommand(IterableDataset):
                 if not len(entry.positives):
                     continue
                 entry.positives = random.choices(entry.positives, k=self.ppe)
-                # entry.negatives = random.choices(entry.negatives, k=self.npe)
-                entry.negatives = random.choices(self.valid_items, k=self.npe)
+                entry.negatives = random.choices(entry.negatives, k=self.npe)
+                # entry.negatives = random.choices(self.valid_items, k=self.npe)
             items = numpy.array(list(entry.positives) + list(entry.negatives))
             item_features = numpy.array([self.ifd[x][:4] for x in items])
+            user_features = numpy.array(self.ufd[entry.id]).reshape(3, 4)
             labels = numpy.concatenate([
                 numpy.ones_like(entry.positives),
                 numpy.zeros_like(entry.negatives)
             ])
             randperm = numpy.random.permutation(len(items))
-            yield entry.id, items[randperm], item_features[randperm], labels[randperm]
+            yield entry.id, items[randperm], user_features, item_features[randperm], labels[randperm]
 
     def __length_hint__(self):
         return len(self.entries) if self.full else 2 * len(self.entries)
@@ -206,7 +210,7 @@ class TestModel(nn.Module):
         self.srt = sorted(self.cnt, key=self.cnt.get)
         self.table = {x: i for i, x in enumerate(self.srt)}
 
-    def forward(self, user_ids, item_ids, item_features, labels=None):
+    def forward(self, user_ids, item_ids, *_dc):
         scores = torch.zeros_like(item_ids).float()
         for b in range(item_ids.shape[0]):
             for i in range(item_ids.shape[1]):
@@ -218,9 +222,10 @@ def main():
     train = data_io.load_train_entries('data/bookcross.train.rating')
     test = data_io.load_test_entries('data/bookcross', False)
     features_dict = pickle.load(open('data/book_info_bookcross', 'rb'))
+    user_features_dict = pickle.load(open('data/user_hist_withinfo_bookcross', 'rb'))
     test_model = TestModel(train)
-    train = Rekommand(train, features_dict, 11, 44, 44)
-    test = Rekommand(test, features_dict, full=True)
+    train = Rekommand(train, features_dict, user_features_dict, 11, 44, 44)
+    test = Rekommand(test, features_dict, user_features_dict, full=True)
     B = 32
     train_loader = DataLoader(train, B, num_workers=4)
     test_loader = DataLoader(test, B, num_workers=1)
