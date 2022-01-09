@@ -1,6 +1,7 @@
 import copy
 import pickle
 import random
+import itertools
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -109,34 +110,37 @@ class DGCNN(nn.Module):
 
         x = self.conv5(x)
 
-        x = F.leaky_relu(self.bn6(self.linear1(x)), negative_slope=0.2)
-        x = self.dp1(x)
-        x = F.leaky_relu(self.bn7(self.linear2(x)), negative_slope=0.2)
-        x = self.dp2(x)
-        x = self.linear3(x)
+        # x = F.leaky_relu(self.bn6(self.linear1(x)), negative_slope=0.2)
+        # x = self.dp1(x)
+        # x = F.leaky_relu(self.bn7(self.linear2(x)), negative_slope=0.2)
+        # x = self.dp2(x)
+        # x = self.linear3(x)
         return x
 
 
 class Net(nn.Module):
     def __init__(self):
         super().__init__()
-        self.user_embed = nn.Embedding(10000, 128)
+        self.user_embed = nn.Embedding(10000, 64)
         self.item_embed = nn.Embedding(90000, 32)
+        self.item_bias = nn.Embedding(90000, 1)
         self.dgcnn = DGCNN(SimpleNamespace(
             k=9,
-            emb_dims=256,
-            input_dims=128,
+            emb_dims=64,
+            input_dims=192,
             output_channels=1,
             dropout=0.3
         ))
 
-    def forward(self, user_ids, item_ids, labels=None):
+    def forward(self, user_ids, item_ids, item_features, labels=None):
         user = self.user_embed(user_ids)
-        user = torch.cat([user], -1)
-        item = self.item_embed(item_ids).flatten(2)
-        item = torch.cat([item], -1)
-        hodgepodge = torch.cat([item], 1).transpose(1, 2)
-        return self.dgcnn(hodgepodge).squeeze(1)  # [..., 1:]
+        item = self.item_embed(item_features).flatten(2)
+        hodgepodge = torch.cat([
+            user.unsqueeze(1).repeat(1, item.shape[1], 1), item
+        ], -1).transpose(1, 2)
+        iemb = self.dgcnn(hodgepodge)
+        uemb = user
+        return torch.einsum("bdn,bd->bn", iemb, uemb) * 0.1 + self.item_bias(item_ids).squeeze(-1).detach()
 
 
 class Rekommand(IterableDataset):
@@ -155,6 +159,7 @@ class Rekommand(IterableDataset):
         self.entries = entries
         self.ifd = item_feature_dict
         self.valid_items = list(self.ifd.keys())
+        self.cum_weights = [*itertools.accumulate(map(lambda x: len(x.positives), self.entries))]
 
     def __iter__(self):
         rng = len(self.entries) if self.full else 2 ** 30
@@ -168,13 +173,13 @@ class Rekommand(IterableDataset):
                 # entry.negatives = random.choices(entry.negatives, k=self.npe)
                 entry.negatives = random.choices(self.valid_items, k=self.npe)
             items = numpy.array(list(entry.positives) + list(entry.negatives))
-            # item_features = numpy.array([self.ifd[x][:4] for x in items])
+            item_features = numpy.array([self.ifd[x][:4] for x in items])
             labels = numpy.concatenate([
                 numpy.ones_like(entry.positives),
                 numpy.zeros_like(entry.negatives)
             ])
             randperm = numpy.random.permutation(len(items))
-            yield entry.id, items[randperm], labels[randperm]
+            yield entry.id, items[randperm], item_features[randperm], labels[randperm]
 
     def __length_hint__(self):
         return len(self.entries) if self.full else 2 * len(self.entries)
@@ -182,13 +187,13 @@ class Rekommand(IterableDataset):
 
 class Loss(Backprop):
     def __call__(self, inputs, model_return):
-        _, _, y = inputs
+        *_, y = inputs
         return F.binary_cross_entropy_with_logits(model_return, y.float())
 
 
 class NDCG3(Metric):
     def __call__(self, inputs, model_return):
-        _, _, y = inputs
+        *_, y = inputs
         topk = torch.topk(model_return, 3, -1).indices
         return batch_ndcg_torch(topk, y).mean()
 
@@ -201,7 +206,7 @@ class TestModel(nn.Module):
         self.srt = sorted(self.cnt, key=self.cnt.get)
         self.table = {x: i for i, x in enumerate(self.srt)}
 
-    def forward(self, user_ids, item_ids, labels=None):
+    def forward(self, user_ids, item_ids, item_features, labels=None):
         scores = torch.zeros_like(item_ids).float()
         for b in range(item_ids.shape[0]):
             for i in range(item_ids.shape[1]):
@@ -217,11 +222,15 @@ def main():
     train = Rekommand(train, features_dict, 11, 44, 44)
     test = Rekommand(test, features_dict, full=True)
     B = 32
-    train_loader = DataLoader(train, B, num_workers=2)
+    train_loader = DataLoader(train, B, num_workers=4)
     test_loader = DataLoader(test, B, num_workers=1)
     run_epoch(test_model, test_loader, [Loss(), NDCG3()], 0)
 
     model = Net().to(device)
+    model.item_bias.weight.set_(torch.tensor(
+        [numpy.log(test_model.cnt.get(x, 0.1)) for x in range(90000)],
+        device=device, dtype=torch.float32
+    ).unsqueeze(-1))
     opt = torch.optim.Adam(model.parameters())
     best_acc = -1
     for epoch in range(100):
