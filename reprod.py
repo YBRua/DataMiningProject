@@ -42,15 +42,15 @@ class SelfAttention(nn.Module):
 class Net(nn.Module):
     def __init__(self):
         super().__init__()
-        self.user_embed = nn.Embedding(90000, 5)
-        self.item_embed = nn.Embedding(90000, 5)
+        self.user_embed = nn.Embedding(90000, 300)
+        self.item_embed = nn.Embedding(90000, 300)
         with torch.no_grad():
             self.user_embed.weight.uniform_(-0.05, 0.05)
             self.item_embed.weight.uniform_(-0.05, 0.05)
-        self.attn = SelfAttention(5, 5, 600, 600)
+        self.attn = SelfAttention(5, 300, 600, 600)
         self.drop = nn.Dropout(0.4)
         self.proj = nn.Linear(600, 300)
-        self.linear = nn.Linear(600, 1)
+        self.linear = nn.Linear(300, 1)
         self.norm = nn.LayerNorm(300)
 
     def forward(self, user_ids, item_ids, user_features, item_features, labels=None):
@@ -60,7 +60,7 @@ class Net(nn.Module):
         user = self.user_embed(user_features).mean(2)  # bLd
         user = user.unsqueeze(1).repeat(1, item.shape[1], 1, 1)  # bNLd
         sa_pre = torch.cat([user, item], 2)  # bN (L+M) d
-        sa_post = self.attn(sa_pre).mean(-2)  # bNd
+        sa_post = self.norm(self.proj(self.attn(sa_pre)) + sa_pre).mean(-2)  # bNd
         return self.linear(self.drop(sa_post)).squeeze()
 
 
