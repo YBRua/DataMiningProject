@@ -87,3 +87,24 @@ def run_epoch(
             desc += " %s: %.4f" % (k, meter[k])
         prog.set_description(desc)
     return {k: meter[k] for k in sorted(meter.k)}
+
+
+def merge_state_dicts(dicts):
+    refd = dicts[0]
+    result = dict()
+    if isinstance(refd, dict):
+        for k in refd.keys():
+            result[k] = merge_state_dicts([d[k] for d in dicts])
+        return result
+    else:
+        return sum(dicts)
+
+
+def scale_state_dict(d, n):
+    result = dict()
+    if isinstance(d, dict):
+        for k in d.keys():
+            result[k] = scale_state_dict(d[k], n)
+        return result
+    else:
+        return torch.multiply(d, n)
