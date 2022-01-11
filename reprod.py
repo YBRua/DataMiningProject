@@ -66,16 +66,13 @@ class Net(nn.Module):
 
 def get_train_instances(train, ufd, ifd):
     user_input, item_input, labels = [], [], []
-    num_users = train.shape[0]
     user_ids = []
     item_ids = []
     for (u, i) in train.keys():
-        # positive instance
         user_ids.append(u)
         item_ids.append(i)
         user_input.append(numpy.array(ufd[u]).reshape(-1, 4))
         item_input.append(numpy.array(ifd[i][:4])[None])
-        # assert ifd[i][:4] == ifd[i][4:8] == ifd[i][8:12] == ifd[i][12:], [i, ifd[i]]
         if train[(u, i)] == 1:
             labels.append(1)
         if train[(u, i)] == -1:
@@ -148,41 +145,35 @@ class NDCG3(Metric):
 
 
 def main():
-    # train = data_io.load_train_entries('data/bookcross.train.rating')
-    train_raw = pickle.load(open("train.pkl", "rb"))
+    train_raw = pickle.load(open("data/train.pkl", "rb"))
     test = data_io.load_test_entries('data/bookcross', False)
     features_dict = pickle.load(open('data/book_info_bookcross', 'rb'))
     user_features_dict = pickle.load(open('data/user_hist_withinfo_bookcross', 'rb'))
-    # train = Rekommand(train, features_dict, user_features_dict, 11, 44, 44)
     test = Rekommand(test, features_dict, user_features_dict, full=True)
     B = 64
     test_loader = DataLoader(test, B, num_workers=1)
 
-    model = Net()
-    # weights = pickle.load(open("param_lists.pkl", "rb"))
-    '''with torch.no_grad():
-        model.user_embed.weight.set_(torch.tensor(weights[2][0]))
-        model.item_embed.weight.set_(torch.tensor(weights[3][0]))
-        model.attn.attn_k.weight.set_(torch.tensor(weights[-4][0].T))
-        model.attn.attn_q.weight.set_(torch.tensor(weights[-4][1].T))
-        model.attn.attn_v.weight.set_(torch.tensor(weights[-4][2].T))
-        model.linear.weight.set_(torch.tensor(weights[-1][0].T))
-        model.linear.bias.set_(torch.tensor(weights[-1][1]))'''
-    model = model.to(device)
+    model = Net().to(device)
+    target = Net().to(device)
     opt = torch.optim.Adam(model.parameters())
     best_acc = -1
-    for epoch in range(100):
-        train = get_train_instances(train_raw, user_features_dict, features_dict)
+    train = get_train_instances(train_raw, user_features_dict, features_dict)
+    for epoch in range(20):
         train_loader = DataLoader(train, B, num_workers=2, shuffle=True)
-        train_sub = train_loader  # TruncatedIter(train_loader, train.__length_hint__() // 4)
-        train_stats = run_epoch(model, train_sub, [Loss()], epoch, opt)
-        val_stats = run_epoch(model, test_loader, [Loss(), NDCG3()], epoch)
+        train_stats = run_epoch(model, train_loader, [Loss()], epoch, opt)
+        lerp = epoch / (epoch + 1)
+        with torch.no_grad():
+            target.load_state_dict(merge_state_dicts([
+                scale_state_dict(target.state_dict(), lerp),
+                scale_state_dict(model.state_dict(), 1 - lerp)
+            ]))
+        val_stats = run_epoch(target, test_loader, [Loss(), NDCG3()], epoch)
         if epoch == 0:
-            write_log("epoch", "train_loss", "val_loss", "train_ndcg@3", "val_ndcg@3")
+            write_log("epoch", "train_loss", "val_loss", "val_ndcg@3")
         write_log(
             epoch,
             train_stats['Loss'], val_stats['Loss'],
-            float('nan'), val_stats['NDCG3'],
+            val_stats['NDCG3'],
         )
         if val_stats['NDCG3'] > best_acc:
             best_acc = val_stats['NDCG3']
