@@ -21,14 +21,24 @@ class Meter:
         self.v[k] += v
 
 
-class Metric:
+class kMetric:
+    def __init__(self, k) -> None:
+        self.k = k
+
     @abstractmethod
     def __call__(self, inputs, model_return) -> torch.Tensor:
         raise NotImplementedError
 
+    def __str__(self) -> str:
+        if self.k is not None:
+            return f'{self.__class__.__name__}@{self.k}'
+        else:
+            return self.__class__.__name__
 
-class Backprop(Metric):
-    pass
+
+class Backprop(kMetric):
+    def __init__(self, k=None) -> None:
+        super().__init__(k)
 
 
 class TruncatedIter:
@@ -62,7 +72,7 @@ def write_log(*data):
 
 def run_epoch(
     model: torch.nn.Module,
-    loader, metrics: Sequence[Metric],
+    loader, metrics: Sequence[kMetric],
     epoch: int,
     optimizer: Optional[torch.optim.Optimizer]=None
 ):
@@ -81,7 +91,7 @@ def run_epoch(
                 optimizer.zero_grad()
                 mval.backward()
                 optimizer.step()
-            meter.u(met.__class__.__name__, mval.item())
+            meter.u(str(met), mval.item())
         desc = "VT"[training] + " %02d" % epoch
         for k in sorted(meter.k):
             desc += " %s: %.4f" % (k, meter[k])

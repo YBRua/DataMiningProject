@@ -2,7 +2,7 @@ import torch
 import random
 import torch.nn as nn
 import math
-import numpy
+import numpy as np
 from torch.utils.data import DataLoader
 from .sparse_graph import SparseGraph
 
@@ -72,11 +72,45 @@ def ndcg(ranked, gt, at=5):
 
 
 def batch_ndcg_torch(topk: torch.Tensor, labels01: torch.Tensor):
-    t = math.log(2) / torch.log(torch.arange(
-        topk.shape[-1], dtype=torch.float32, device=topk.device
-    ) + 2)
-    batch_idx = topk.new_tensor(numpy.arange(topk.shape[0])).unsqueeze(-1)
+    # topk: B,K
+    # labels01: B,N
+    t = math.log(2) / torch.log(
+        torch.arange(topk.shape[-1], dtype=torch.float32, device=topk.device)
+        + 2)
+    batch_idx = topk.new_tensor(np.arange(topk.shape[0])).unsqueeze(-1)
     return (t * labels01[batch_idx, topk].to(t)).sum(-1) / t.sum(-1)
+
+
+def batched_hit_ratio(topk: torch.Tensor, labels01: torch.Tensor):
+    # print(topk.shape, labels01.shape)
+    batch = topk.shape[0]
+    k = topk.shape[-1]
+    batch_idx = topk.new_tensor(np.arange(batch)).unsqueeze(-1)
+    hit_ratios = labels01[batch_idx, topk].sum(-1) / k
+    return hit_ratios
+
+
+def batched_average_precision(topk: torch.Tensor, labels01: torch.Tensor):
+    batch = topk.shape[0]
+    k = topk.shape[-1]
+    batch_idx = topk.new_tensor(np.arange(batch)).unsqueeze(-1)
+    hits = labels01[batch_idx, topk]
+    scores = torch.zeros(batch, k).to(topk).float()  # b,k
+    for i in range(k):
+        hr = batched_hit_ratio(topk[:, :i+1], labels01)  # b
+        scores[:, i] = hr
+    scores = scores * hits
+    return scores.sum(axis=-1) / k
+
+
+def batched_reciprocal_rank(topk: torch.Tensor, labels01: torch.Tensor):
+    batch = topk.shape[0]
+    k = topk.shape[-1]
+    batch_idx = topk.new_tensor(np.arange(batch)).unsqueeze(-1)
+    hits = labels01[batch_idx, topk]  # b,k
+    hit_idx = torch.arange(k, 0, -1).to(topk)  # k
+    reciprocal_ranks = torch.argmax(hits * hit_idx, axis=1).to(torch.float)
+    return torch.where(hits.sum(-1) < 1e-7, torch.zeros_like(reciprocal_ranks), 1 / (reciprocal_ranks + 1))
 
 
 def getNDCG(ranklist, gtItem):
@@ -92,3 +126,40 @@ def getNDCG(ranklist, gtItem):
             idcg += math.log(2) / math.log(i + 2)
         result.append(count / idcg)
     return result
+
+
+def getHitRatio(ranklist, gtItem):
+    result = []
+    for i in [1, 2, 3, 4, 5]:
+        count = 0
+        for item in ranklist[0:i]:
+            if item in gtItem:
+                count += 1
+        result.append(count / i)
+    return result
+
+
+def getAP(topk, labels01):
+    result = []
+    for j in [1, 2, 3, 4, 5]:
+        count = 0
+        p = []
+        for i in range(j):
+            item = topk[i]
+            if item in labels01:
+                count += 1
+                p.append(count / (i + 1))
+        print(j, p)
+        if len(p) == 0:
+            result.append(0)
+        else:
+            result.append(np.sum(p) / j)
+    return result
+
+
+def getRR(topk: torch.Tensor, labels01: torch.Tensor):
+    for i in range(5):
+        item = topk[i]
+        if item in labels01:
+            return 1 / (i + 1)
+    return 0

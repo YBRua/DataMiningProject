@@ -7,16 +7,51 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy
 from typing import Dict, List
-from types import SimpleNamespace
 from torch.utils.data import DataLoader, IterableDataset
+from freq_counter import FreqCounter
 
-from baseline.metric import batch_ndcg_torch
-from dgcnn import DGCNN
+from argparse import ArgumentParser
+from baseline.metric import batch_ndcg_torch, batched_average_precision, batched_hit_ratio, batched_reciprocal_rank
 import data_io
 from common import *
+from metrics import MAP, NDCG, HR, RR, Loss
 
 
-device = torch.device("cuda:0")
+def parse_args():
+    parser = ArgumentParser()
+    parser.add_argument(
+        '--epoch', '-e', type=int, default=20,
+        help='Number of training epoches')
+    parser.add_argument(
+        '--batchsize', '-b', type=int, default=64,
+        help='Batch size')
+    parser.add_argument(
+        '--dataset', '-d', choices=['bookcross', 'music'],
+        default='bookcross',
+        help='Dataset, can be one of bobookcrossok or music')
+    parser.add_argument(
+        '--device', type=str, default='cuda:0',
+        help='PyTorch style device to run the model')
+
+    return parser.parse_args()
+
+
+def prepare_dataset(dataset: str):
+    assert dataset in ['bookcross', 'music'], f'Invalid dataset: {dataset}'
+
+    train_raw = data_io.load_rating_file_as_matrix(f'data/{dataset}.train.rating')
+    train_smp = data_io.load_train_entries(f'data/{dataset}.train.rating')
+    test = data_io.load_test_entries(f'data/{dataset}', False)
+    if dataset == 'bookcross':
+        feature_dict_path = 'data/book_info_bookcross'
+        user_feat_path = 'data/user_hist_withinfo_bookcross'
+    else:
+        feature_dict_path = 'data/song_info_music_HK'
+        user_feat_path = 'data/user_hist_withinfo_music_HK'
+    features_dict = pickle.load(open(feature_dict_path, 'rb'))
+    user_features_dict = pickle.load(open(user_feat_path, 'rb'))
+
+    return train_raw, train_smp, test, features_dict, user_features_dict
 
 
 class SelfAttention(nn.Module):
@@ -153,41 +188,45 @@ class Rekommand(IterableDataset):
         return len(self.entries) if self.full else 2 * len(self.entries)
 
 
-class Loss(Backprop):
-    def __call__(self, inputs, model_return):
-        *_, y = inputs
-        return F.binary_cross_entropy_with_logits(model_return.reshape(*y.shape), y.float())
-
-
-class NDCG3(Metric):
-    def __call__(self, inputs, model_return):
-        *_, y = inputs
-        topk = torch.topk(model_return.reshape(*y.shape), 3, -1).indices
-        return batch_ndcg_torch(topk, y).mean()
-
-
 def main():
-    train_raw = pickle.load(open("data/train.pkl", "rb"))
-    train_smp = data_io.load_train_entries('data/bookcross.train.rating')
-    test = data_io.load_test_entries('data/bookcross', False)
-    features_dict = pickle.load(open('data/book_info_bookcross', 'rb'))
-    user_features_dict = pickle.load(open('data/user_hist_withinfo_bookcross', 'rb'))
+    args = parse_args()
+    DEVICE = torch.device(args.device)
+    BATCH_SIZE = args.batchsize
+    EPOCHES = args.epoch
+
+    train_raw, train_smp, test, features_dict, user_features_dict = prepare_dataset(args.dataset)
+
+    target = FreqCounter(train_smp)
+
     train_smp = Rekommand(train_smp, features_dict, user_features_dict)
     test = Rekommand(test, features_dict, user_features_dict, full=True)
-    B = 64
-    train_loader_smp = DataLoader(train_smp, B, num_workers=4)
-    test_loader = DataLoader(test, B, num_workers=1)
+    train_loader_smp = DataLoader(train_smp, BATCH_SIZE, num_workers=4)
+    test_loader = DataLoader(test, BATCH_SIZE, num_workers=1)
+    val_stats = run_epoch(
+        target,
+        test_loader,
+        [
+            Loss(),
+            RR(5),
+            MAP(3), MAP(5),
+            NDCG(3), NDCG(5),
+            HR(3), HR(5)
+        ],
+        1
+    )
+    print(val_stats)
 
-    model = RankingAwareNet(SAF()).to(device)
-    target = RankingAwareNet(SAF()).to(device)
+    model = RankingAwareNet(SAF()).to(DEVICE)
+    target = RankingAwareNet(SAF()).to(DEVICE)
     enc_opt = torch.optim.Adam(model.encoder.parameters())
     opt = torch.optim.Adam(model.parameters())
     best_acc = -1
     train = get_train_instances(train_raw, user_features_dict, features_dict)
-    for epoch in range(20):
-        train_loader = DataLoader(train, B, num_workers=2, shuffle=True)
+
+    for epoch in range(EPOCHES):
+        train_loader = DataLoader(train, BATCH_SIZE, num_workers=2, shuffle=True)
         ent_stats = run_epoch(model.encoder, train_loader, [Loss()], epoch, enc_opt)
-        train_sub = TruncatedIter(train_loader_smp, train_smp.__length_hint__() // B + 1)
+        train_sub = TruncatedIter(train_loader_smp, train_smp.__length_hint__() // BATCH_SIZE + 1)
         frt_stats = run_epoch(model, train_sub, [Loss()], epoch, opt)
         lerp = epoch / (epoch + 1)
         with torch.no_grad():
@@ -195,16 +234,37 @@ def main():
                 scale_state_dict(target.state_dict(), lerp),
                 scale_state_dict(model.state_dict(), 1 - lerp)
             ]))
-        val_stats = run_epoch(target, test_loader, [Loss(), NDCG3()], epoch)
+        val_stats = run_epoch(
+            target,
+            test_loader,
+            [
+                Loss(),
+                RR(5),
+                MAP(3), MAP(5),
+                NDCG(3), NDCG(5),
+                HR(3), HR(5)
+            ],
+            epoch
+        )
         if epoch == 0:
-            write_log("epoch", "encoder_loss", "finetune_loss", "val_loss", "val_ndcg@3")
+            write_log(
+                "epoch",
+                "encoder_loss", "finetune_loss", "val_loss",
+                "val_rr@5",
+                "val_map@3", "val_map@5",
+                "val_ndcg@3", "val_ndcg@5",
+                "val_hr@3", "val_hr@5"
+            )
         write_log(
             epoch,
-            ent_stats['Loss'], frt_stats['Loss'],
-            val_stats['Loss'], val_stats['NDCG3']
+            ent_stats['Loss'], frt_stats['Loss'], val_stats['Loss'],
+            val_stats['RR@5'],
+            val_stats['MAP@3'], val_stats['MAP@5'],
+            val_stats['NDCG@3'], val_stats['NDCG@5'],
+            val_stats['HR@3'], val_stats['HR@5']
         )
-        if val_stats['NDCG3'] > best_acc:
-            best_acc = val_stats['NDCG3']
+        if val_stats['NDCG@3'] > best_acc:
+            best_acc = val_stats['NDCG@3']
             torch.save(model.state_dict(), "e2e.dat")
             print("New best!")
 
